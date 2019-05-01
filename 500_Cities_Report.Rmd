@@ -1,0 +1,736 @@
+---
+title: "500 Cities Heart Health Report"
+author: "Benjamin Goebel"
+date: "April 22, 2019"
+output: pdf_document
+linkcolor: blue
+dev: pdf
+geometry: "left = 1cm, right = 1cm, top = 1.5cm, bottom = 1.5cm"
+---
+
+```{r Setup, include = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+options(digits = 3)
+library(tidyverse)
+library(stringr)
+library(modelr)
+library(maps)
+library(ggthemes)
+
+```
+
+```{r Functions, include = FALSE}
+
+# Functions
+
+# Purpose: Visualizes the relationship between two variables.
+# Arguments: x_measure: A character, the measure that will be the independent
+#                       variable.
+#            y_measure: A character, the measure that will be the dependent 
+#                       variable.
+#            x_label: A character, the label for the x_measure.
+#            y_label: A character, the label for the y_measure.
+# Returns: Nothing.
+y_vs_x_plot <- function(x_measure, y_measure, x_label, y_label){
+  y_vs_x <- grouped_cities %>%
+    filter(Measure %in% c(x_measure, y_measure),
+           Data_Value_Type == "Age-adjusted prevalence") %>%
+    spread(key = Measure, value = AVG_Data_Value) %>%
+    rename(!!x_label := x_measure, !!y_label := y_measure)
+  
+  ungrouped_y_vs_x <- y_vs_x %>%
+    ungroup()
+  r <- cor(ungrouped_y_vs_x[x_label], ungrouped_y_vs_x[y_label], 
+           method = "pearson")[[1]]
+  
+  formula <- as.formula(str_c(y_label, "~", x_label))
+  mod <- lm(formula, data = y_vs_x)
+  grid <- y_vs_x %>%
+    ungroup() %>%
+    data_grid(!!sym(x_label) := seq_range(!!sym(x_label), 5)) %>%
+    add_predictions(mod, y_label)
+  
+  ggplot(y_vs_x, aes_string(x = x_label, y = y_label)) +
+    geom_point() +
+    geom_line(data = grid, color = "red", size = 1.5) +
+    labs(title = str_c(str_replace_all(y_label, "_", " "), 
+                       " as a function of ", 
+                       str_replace_all(x_label, "_", " ")),
+         x = str_replace_all(x_label, "_", " "),
+         y = str_replace_all(y_label, "_", " "),
+         caption = bquote(paste(r, " = ", .(format(r, digits = 3)),
+                                ", ", r^2, " = ", 
+                                .(format(r^2, digits = 3)), 
+                                ", Source: 500 Cities"))) +
+    theme(plot.title = element_text(hjust = 0.5),
+          text = element_text(size = 10))
+}
+
+# Purpose: Maps a state abbreviation to a region in the United States.
+# Arguments: state: A character, the state abbreviation in the 
+#                   United States being mapped.
+# Returns: A character, the region.
+state_to_region <- function(state){
+  if (state %in% c("PA", "NJ", "NY", "CT",
+                   "RI", "MA", "VT", "NH", "ME")) {
+    "NORTHEAST"  
+  } else if (state %in% c("DE", "MD", "VA", "WV", 
+                          "KY", "NC", "TN", "SC", "GA", 
+                          "AL", "MS", "AR", "LA", "FL")) {
+    "SOUTHEAST"
+  } else if (state %in% c("OH", "MI", "IN", "WI", "IL", "MN", 
+                          "IA", "MO", "ND", "SD", "NE", "KS")){
+    "MIDWEST"
+  } else if (state %in% c("OK", "NM", "AZ", "TX")){
+    "SOUTHWEST"
+  } else if (state %in% c("MT", "ID", "WA", 
+                          "OR", "WY", "CO", "UT", 
+                          "NV", "CA", "AK", "HI")){
+    "WEST"
+  } else {
+    "NA"
+  }
+}
+
+# Purpose: Maps a vector of state abbreviations to their 
+#          respective regions.
+# Arguments: states: A vector of characters, which each is a state 
+#                    abbreviation in the United States.
+# Returns: A vector of characters, which each is a region in the United States.
+vectorized_state_to_region <- function(states){
+  map_chr(states, state_to_region)
+}
+
+# Purpose: Gets the United States states' rankings based on one measure.
+# Arguments: measure: A character, the measure, by which the states
+#                     will be ranked.
+# Returns: A tibble, the states ranked by the measure.
+get_states_ranking <- function(measure, measure_label) {
+  ranking_column <- str_c(measure_label, "_Ranking")
+  value_column <- str_c(measure_label, "_Value")
+  grouped_states_by_region %>%
+    filter(Measure == measure,
+           Data_Value_Type == "Age-adjusted prevalence") %>%
+    arrange(AVG_Data_Value) %>%
+    rowid_to_column(ranking_column) %>%
+    rename(!!value_column := AVG_Data_Value) %>%
+    ungroup() %>%
+    select(State_Name, Region, Num_Cities, !!ranking_column, !!value_column)
+}
+
+```
+
+```{r Data, include = FALSE}
+
+# Inputting and organizing data
+
+cities <- read_csv("500_Cities_Local_Data_for_Better_Health_2017.csv")
+colnames(cities)[colnames(cities) == "StateDesc"] <-  "State_Name"
+cities$State_Name[cities$State_Name == "North Carolin"] <- "North Carolina"
+cities$State_Name[cities$State_Name == "South Carolin"] <- "South Carolina"
+
+grouped_cities <- cities %>%
+  filter(StateAbbr != "US") %>%
+  group_by(Year, StateAbbr, State_Name, CityName, Measure, Data_Value_Type) %>%
+  select(Year, StateAbbr, State_Name, CityName, Measure, Data_Value_Type, Data_Value) %>%
+  summarize(AVG_Data_Value = mean(Data_Value, na.rm = TRUE))
+
+grouped_states <- grouped_cities %>%
+  filter(StateAbbr != "DC") %>%
+  group_by(Year, StateAbbr, State_Name, Measure, Data_Value_Type) %>%
+  select(Year, StateAbbr, State_Name, Measure, Data_Value_Type, AVG_Data_Value) %>%
+  summarize(AVG_Data_Value = mean(AVG_Data_Value, na.rm = TRUE),
+            Num_Cities = n())
+
+grouped_states_by_region <- grouped_states %>%
+  mutate(Region = vectorized_state_to_region(StateAbbr)) %>%
+  filter(Region != "NA")
+
+```
+
+# Introduction
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;This report analyzes the [500 Cities](https://www.cdc.gov/500cities/index.htm) dataset. The [500 Cities](https://www.cdc.gov/500cities/index.htm) dataset is published by the CDC and contains epidemiological data on the 500 largest cities in the United States, where the largest city in the United States is defined as having the largest population of any city in the United States. The data contains health measures that can be categorized by prevention, unhealthy behaviors, and health outcomes. The category for and the description of each measure in the [500 Cities](https://www.cdc.gov/500cities/index.htm) dataset can be viewed on the [500 Cities measures page](https://www.cdc.gov/500cities/measure-definitions.htm). This report explores correlations in the data, focusing on heart health measures. With these correlations, this report examines which states and regions in the United States fair well and which states and regions fair poorly on these heart health measures.
+
+_The dataset used in this report contains data from 2014 and 2015 and can be downloaded [here](https://chronicdata.cdc.gov/500-Cities/500-Cities-Local-Data-for-Better-Health-2017-relea/vurf-k5wr)_.
+
+# Terms
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Below, relevant terms to this report are defined. The definitions for these terms are provided on the [500 Cities measures page](https://www.cdc.gov/500cities/measure-definitions.htm). Each of these terms can be categorized as an unhealthy behavior or a health outcome. Further, each term can be defined as the percentage of people surveyed who engage in the unhealthy behavior or have the health outcome. These percentages are calculated by determining the number of people who are a part of the population the term defines and the total number of people surveyed. The total number of people surveyed counts all people surveyed about the term who are 18 years or older and reported being or not being a part of the population the term defines. This excludes those who refused to answer, had a missing answer, or answered "don't know/not sure" to the question; additional exclusions apply to some terms. For more information on each of these terms, please view the [500 Cities measures page](https://www.cdc.gov/500cities/measure-definitions.htm).
+
+__Chronic Kidney Disease:__ Respondents, 18 years or older, who report ever having been told by a doctor, nurse, or other health professional that they have kidney disease. The CDC categorizes this measure as a health outcome.
+
+__Chronic Obstructive Pulmonary Disease:__ Respondents, 18 years or older, who report ever having been told by a doctor, nurse, or other health professional that they had chronic obstructive pulmonary disease, emphysema, or chronic bronchitis. The CDC categorizes this measure as a health outcome.
+
+__Coronary Heart Disease:__ Respondents, 18 years or older, who report ever having been told by a doctor, nurse, or other health professional that they had angina or coronary heart disease. The CDC categorizes this measure as a health outcome.
+
+__Diabetes:__ Respondents, 18 years or older, who report ever having been told by a doctor, nurse, or other health professional that they have diabetes. This excludes women who were only told they had diabetes during pregnancy. The CDC categorizes this measure as a health outcome.
+
+__High Blood Pressure:__ Respondents, 18 years or older, who report ever having been told by a doctor, nurse, or other health professional that they have high blood pressure. This excludes women who were only told they had high blood pressure during pregnancy and those who were told they had borderline hypertension. The CDC categorizes this measure as a health outcome.
+
+__No Leisure Time Physical Activity:__ Respondents, 18 years or older, who answered “no” to the following question: “During the past month, other than your regular job, did you participate in any physical activities or exercises such as running, calisthenics, golf, gardening, or walking for exercise?”. The CDC categorizes this measure as an unhealthy behavior.
+
+__Obesity:__ Respondents, 18 years or older, who have a BMI of greater or equal to 30.0. This BMI is calculated from respondents' self-reported height and weight. This excludes pregnant women, and those with less typical height measurements, weight measurements, and BMI calculations. The CDC categorizes this measure as an unhealthy behavior; this report, however, categorizes this measure as a health outcome.
+
+__Poor Mental Health:__ Respondents, 18 years or older, who report poor mental health in at least 14 of the past 30 days. The CDC categorizes this measure as a health outcome.
+
+__Poor Physical Health:__ Respondents, 18 years or older, who report poor physical health in at least 14 of the past 30 days. The CDC categorizes this measure as a health outcome.
+
+__Smoking:__ Respondents, 18 years or older, who report having smoked at least 100 cigarettes in their lifetime and smoke every or some days. The CDC categorizes this measure as an unhealthy behavior.
+
+__Stroke:__ Respondents, 18 years or older, who report ever having been told by a doctor, nurse, or other health professional that they have had a stroke. The CDC categorizes this measure as a health outcome.
+
+# Correlation Analysis - _Possible_ Coronary Heart Disease Indicators
+
+__Description__
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Examine which measures, in the dataset, strongly correlate with Coronary Heart Disease. The correlations are calculated using the Pearson Product-Moment Correlation. Correlations are included if the correlation is between Coronary Heart Disease and another measure in the dataset and if the magnitude of the correlation coefficient is greater or equal to 0.80. Each of these strong correlations is graphed as a scatter plot, with Coronary Heart Disease on the y-axis and the other relevant measure on the x-axis. For each scatter plot, each mark represents one of the 500 cities from the [500 Cities](https://www.cdc.gov/500cities/index.htm) dataset, with each plot fitted with a linear regression line. The graphs are sorted from smallest to largest correlation coefficient.
+
+&nbsp;
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, hbp), echo = FALSE}
+
+# Coronary Heart Disease as a function of High Blood Pressure
+y_vs_x_plot("High blood pressure among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "High_Blood_Pressure",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, diabetes), echo = FALSE}
+
+# Coronary Heart Disease as a function of Diabetes
+y_vs_x_plot("Diagnosed diabetes among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Diabetes",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, smoking), echo = FALSE}
+
+# Coronary Heart Disease as a function of Smoking
+y_vs_x_plot("Current smoking among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Smoking",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, obesity), echo = FALSE}
+
+# Coronary Heart Disease as a function of Obesity
+y_vs_x_plot("Obesity among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Obesity",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, pmh), echo = FALSE}
+
+# Coronary Heart Disease as a function of Poor Mental Health
+y_vs_x_plot("Mental health not good for >=14 days among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Poor_Mental_Health",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, nltpa), echo = FALSE}
+
+# Coronary Heart Disease as a function of No Leisure Time Physical Activity
+y_vs_x_plot("No leisure-time physical activity among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "No_Leisure_Time_Physical_Activity",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, ckd), echo = FALSE}
+
+# Coronary Heart Disease as a function of Chronic Kidney Disease
+y_vs_x_plot("Chronic kidney disease among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Chronic_Kidney_Disease",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, stroke), echo = FALSE}
+
+# Coronary Heart Disease as a function of Stroke
+y_vs_x_plot("Stroke among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Stroke",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, copd), echo = FALSE}
+
+# Coronary Heart Disease as a function of Chronic Obstructive Pulmonary Disease
+y_vs_x_plot("Chronic obstructive pulmonary disease among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Chronic_Obstructive_Pulmonary_Disease",
+            "Coronary_Heart_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, pph), echo = FALSE}
+
+# Coronary Heart Disease as a function of Poor Physical Health
+y_vs_x_plot("Physical health not good for >=14 days among adults aged >=18 Years",
+            "Coronary heart disease among adults aged >=18 Years",
+            "Poor_Physical_Health",
+            "Coronary_Heart_Disease")
+
+```
+
+&nbsp;
+
+__Analysis__
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Correlations between Coronary Heart Disease and High Blood Pressure, Diabetes, Smoking, Obesity, Poor Mental Health, No Leisure Time Physical Activity, Chronic Kidney Disease, Stroke, Chronic Obstructive Pulmonary Disease, and Poor Physical Health are seen above. All of these variables strongly correlate with Coronary Heart Disease and can serve as _possible_ indicators of Coronary Heart Disease. Moreover, the number and diversity of variables listed _suggest_ that good heart health can be viewed as general well-being. For the remainder of this report, all variables listed here, that strongly correlate with Coronary Heart Disease, will be denoted as "_Possible_ Coronary Heart Disease Indicators".
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Each of these correlations' r squared values is at least 0.721 (High Blood Pressure) and at most 0.859 (Poor Physical Health). This indicates that at least 72.1% and at most 85.9% of the variance in Coronary Heart Disease is explained by each of these variables, respectively. This, also, means that at most 27.9% and at least 14.1% of the variance in Coronary Heart Disease is not explained by each of these variables, respectively. This allows us to conclude that there are a lot of variables that correlate with Coronary Heart Disease; variables like High Blood Pressure, Diabetes, Smoking, Obesity, Poor Mental Health, No Leisure Time Physical Activity, Chronic Kidney Disease, Stroke, Chronic Obstructive Pulmonary Disease, and Poor Physical Health strongly correlate with Coronary Heart Disease, but there are _possibly_ other variables that correlate with Coronary Heart Disease, as well.  
+
+# Correlation Analysis - _Possible_ Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes
+
+__Description__
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Examine strong correlations between the _Possible_ Coronary Heart Disease Indicators, where one variable is categorized as an unhealthy behavior and the other variable is categorized as a health outcome. Again, the correlations are calculated using the Pearson Product-Moment Correlation. Correlations are included if both variables are _Possible_ Coronary Heart Disease Indicators, one variable is categorized as an unhealthy behavior, one variable is categorized as a health outcome, and the magnitude of the correlation coefficient is greater or equal to 0.80. Each of these strong correlations is graphed as a scatter plot, with the health outcome on the y-axis and the unhealthy behavior on the x-axis. For each scatter plot, each mark represents one of the 500 cities from the [500 Cities](https://www.cdc.gov/500cities/index.htm) dataset, with each plot fitted with a linear regression line. The graphs are sorted from smallest to largest correlation coefficient.
+
+&nbsp;
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, smoking/stroke), echo = FALSE}
+
+# Stroke as a function of Smoking
+y_vs_x_plot("Current smoking among adults aged >=18 Years",
+            "Stroke among adults aged >=18 Years",
+            "Smoking",
+            "Stroke")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, nltpa/stroke), echo = FALSE}
+
+# Stroke as a function of No Leisure Time Physical Activity
+y_vs_x_plot("No leisure-time physical activity among adults aged >=18 Years",
+            "Stroke among adults aged >=18 Years",
+            "No_Leisure_Time_Physical_Activity",
+            "Stroke")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, nltpa/ckd), echo = FALSE}
+
+# Chronic Kidney Disease as a function of No Leisure Time Physical Activity
+y_vs_x_plot("No leisure-time physical activity among adults aged >=18 Years",
+            "Chronic kidney disease among adults aged >=18 Years",
+            "No_Leisure_Time_Physical_Activity",
+            "Chronic_Kidney_Disease")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, nltpa/pph), echo = FALSE}
+
+# Poor Physical Health as a function of No Leisure Time Physical Activity
+y_vs_x_plot("No leisure-time physical activity among adults aged >=18 Years",
+            "Physical health not good for >=14 days among adults aged >=18 Years",
+            "No_Leisure_Time_Physical_Activity",
+            "Poor_Physical_Health")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, nltpa/hbp), echo = FALSE}
+
+# High Blood Pressure as a function of No Leisure Time Physical Activity
+y_vs_x_plot("No leisure-time physical activity among adults aged >=18 Years",
+            "High blood pressure among adults aged >=18 Years",
+            "No_Leisure_Time_Physical_Activity",
+            "High_Blood_Pressure")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, nltpa/obesity), echo = FALSE}
+
+# Obesity as a function of No Leisure Time Physical Activity
+y_vs_x_plot("No leisure-time physical activity among adults aged >=18 Years",
+            "Obesity among adults aged >=18 Years",
+            "No_Leisure_Time_Physical_Activity",
+            "Obesity")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, nltpa/diabetes), echo = FALSE}
+
+# Diabetes as a function of No Leisure Time Physical Activity
+y_vs_x_plot("No leisure-time physical activity among adults aged >=18 Years",
+            "Diagnosed diabetes among adults aged >=18 Years",
+            "No_Leisure_Time_Physical_Activity",
+            "Diabetes")
+
+```
+
+```{r Correlation Analysis (Possible Coronary Heart Disease Indicators, Unhealthy Behaviors and Health Outcomes, smoking/copd), echo = FALSE}
+
+# Chronic Obstructive Pulmonary Disease as a function of Smoking
+y_vs_x_plot("Current smoking among adults aged >=18 Years",
+            "Chronic obstructive pulmonary disease among adults aged >=18 Years",
+            "Smoking",
+            "Chronic_Obstructive_Pulmonary_Disease")
+
+```
+
+&nbsp;
+
+__Analysis__
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Above are strong correlations between Stroke and Smoking, Stroke and No Leisure Time Physical Activity, Chronic Kidney Disease and No Leisure Time Physical Activity, Poor Physical Health and No Leisure Time Physical Activity, High Blood Pressure and No Leisure Time Physical Activity, Obesity and No Leisure Time Physical Activity, Diabetes and No Leisure Time Physical Activity, and Chronic Obstructive Pulmonary Disease and Smoking. In examining correlations between _Possible_ Coronary Heart Disease Indicators that are categorized as unhealthy behaviors (No Leisure Time Physical Activity and Smoking) and _Possible_ Coronary Heart Disease Indicators that are categorized as health outcomes (Stroke, Chronic Kidney Disease, Poor Physical Health, High Blood Pressure, Obesity, Diabetes, and Chronic Obstructive Pulmonary Disease), there are multiple _possible_ explanations for these relationships. Firstly, it is _possible_ that the unhealthy behavior is increasing the likelihood of the health outcome. Secondly, it is _possible_ that having the health outcome increases the likelihood that an individual will engage in the unhealthy behavior. Thirdly, it is _possible_ that people who experience the health outcome engage in the unhealthy behavior, but other factors influence the likelihood of experiencing the health outcome. Regardless if the unhealthy behaviors are _causing_ the health outcomes, it seems worthwhile for people to lessen their engagement in these unhealthy behaviors (i.e. increase time spent participating in leisurely physical activities and smoke less). After all, these behaviors are unhealthy, and there is the _possibility_ that engaging in these unhealthy behaviors less will decrease people's chances of experiencing the health outcomes and increase their chances of having better heart health.
+
+# State/Region Heart Health Analysis
+
+__Description__
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Rank each state, from best to worst, on its performance in Coronary Heart Disease and the _Possible_ Coronary Heart Disease Indicators listed above: High Blood Pressure, Diabetes, Smoking, Obesity, Poor Mental Health, No Leisure Time Physical Activity, Chronic Kidney Disease, Stroke, Chronic Obstructive Pulmonary Disease, and Poor Physical Health. The table is organized below such that each measure has a ranking column (names ending in "Ranking"). Each measure's ranking column ranks each state, from 1 to 50, from smallest to largest percentage value; the percentage value corresponds to the percentage of people, in each state, that engage in the unhealthy behavior or have the health outcome the measure defines. 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Each state's rankings for its 11 measures are summed to yield a total heart heart health score. With this total heart health score, each state is ranked, from 1 to 50, from smallest to largest score, to yield a state heart health ranking. States are sorted, from best to worst state heart health ranking, in the table below. Further, the number of cities from which data was collected in the state is included, as the 500 largest cities in the United States are not evenly distributed across all 50 states. Following the table, the state heart health ranking is visualized on a map of the United States; Alaska and Hawaii are excluded from this map. Additionally, the same process is carried out for the regions of the United States. The regions include Northeast, Southeast, Midwest, West, and Southwest. 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Lastly, to see each state's and each region's percentages for each measure, please see "Table 3: State Heart Health Ranking - Values" and "Table 4: Region Heart Health Ranking - Values", at the end of this report on page 17 and 18. These tables are organized such that each measure has a value column (names ending in "Value"). Each measure's value column corresponds to the percentage of people, in each state and region, that engage in the unhealthy behavior or have the health outcome the measure defines. 
+
+```{r State/Region Heart Health Analysis, echo = FALSE, message = FALSE, warning = FALSE}
+
+# State/Region Heart Health Analysis
+
+# Coronary Heart Disease state ranking
+chd_ranking <- get_states_ranking("Coronary heart disease among adults aged >=18 Years",
+                                  "Coronary_Heart_Disease")
+
+# High Blood Pressure state ranking
+hbp_ranking <- get_states_ranking("High blood pressure among adults aged >=18 Years",
+                                  "High_Blood_Pressure")
+
+# Diabetes state ranking
+diabetes_ranking <- get_states_ranking("Diagnosed diabetes among adults aged >=18 Years",
+                                       "Diabetes")
+
+# Smoking state ranking
+smoking_ranking <- get_states_ranking("Current smoking among adults aged >=18 Years", 
+                                      "Smoking")
+
+# Obesity state ranking
+obesity_ranking <- get_states_ranking("Obesity among adults aged >=18 Years",
+                                      "Obesity")
+
+# Poor Mental Health state ranking
+pmh_ranking <- get_states_ranking("Mental health not good for >=14 days among adults aged >=18 Years", 
+                                  "Poor_Mental_Health")
+
+# No Leisure Time Physical Activity state ranking
+nltpa_ranking <- get_states_ranking("No leisure-time physical activity among adults aged >=18 Years",
+                                    "No_Leisure_Time_Physical_Activity")
+
+# Chronic Kidney Disease state ranking
+ckd_ranking <- get_states_ranking("Chronic kidney disease among adults aged >=18 Years", 
+                                  "Chronic_Kidney_Disease")
+
+# Stroke state ranking
+stroke_ranking <- get_states_ranking("Stroke among adults aged >=18 Years", 
+                                     "Stroke")
+
+# Chronic Obstructive Pulmonary Disease state ranking
+copd_ranking <- get_states_ranking("Chronic obstructive pulmonary disease among adults aged >=18 Years", 
+                                   "Chronic_Obstructive_Pulmonary_Disease")
+
+# Poor Physical Health state ranking
+pph_ranking <- get_states_ranking("Physical health not good for >=14 days among adults aged >=18 Years", 
+                                  "Poor_Physical_Health")
+
+# State Heart Health Ranking
+heart_ranking_by_state <- reduce(list(chd_ranking, hbp_ranking, diabetes_ranking, 
+                                    smoking_ranking, obesity_ranking, pmh_ranking, 
+                                    nltpa_ranking, ckd_ranking, stroke_ranking, 
+                                    copd_ranking, pph_ranking), full_join) %>%
+  mutate(Total_Score = Coronary_Heart_Disease_Ranking + High_Blood_Pressure_Ranking + 
+                       Diabetes_Ranking + Smoking_Ranking +
+                       Obesity_Ranking + Poor_Mental_Health_Ranking +
+                       No_Leisure_Time_Physical_Activity_Ranking +
+                       Chronic_Kidney_Disease_Ranking + Stroke_Ranking +
+                       Chronic_Obstructive_Pulmonary_Disease_Ranking +
+                       Poor_Physical_Health_Ranking) %>%
+  select(State_Name, Region, Num_Cities,
+         Coronary_Heart_Disease_Ranking, Coronary_Heart_Disease_Value,
+         High_Blood_Pressure_Ranking, High_Blood_Pressure_Value,
+         Diabetes_Ranking, Diabetes_Value,
+         Smoking_Ranking, Smoking_Value,
+         Obesity_Ranking, Obesity_Value,
+         Poor_Mental_Health_Ranking, Poor_Mental_Health_Value,
+         No_Leisure_Time_Physical_Activity_Ranking, No_Leisure_Time_Physical_Activity_Value,
+         Chronic_Kidney_Disease_Ranking, Chronic_Kidney_Disease_Value,
+         Stroke_Ranking, Stroke_Value,
+         Chronic_Obstructive_Pulmonary_Disease_Ranking, Chronic_Obstructive_Pulmonary_Disease_Value,
+         Poor_Physical_Health_Ranking, Poor_Physical_Health_Value,
+         Total_Score) %>%
+  arrange(Total_Score) %>%
+  rowid_to_column("State_Heart_Health_Ranking")
+
+# Region Heart Health Ranking
+heart_ranking_by_region <- heart_ranking_by_state %>%
+  group_by(Region) %>%
+  summarize(Num_States = n(),
+            Coronary_Heart_Disease_Value = mean(Coronary_Heart_Disease_Value),
+            High_Blood_Pressure_Value = mean(High_Blood_Pressure_Value),
+            Diabetes_Value = mean(Diabetes_Value),
+            Smoking_Value = mean(Smoking_Value),
+            Obesity_Value = mean(Obesity_Value),
+            Poor_Mental_Health_Value = mean(Poor_Mental_Health_Value),
+            No_Leisure_Time_Physical_Activity_Value = mean(No_Leisure_Time_Physical_Activity_Value),
+            Chronic_Kidney_Disease_Value = mean(Chronic_Kidney_Disease_Value),
+            Stroke_Value = mean(Stroke_Value),
+            Chronic_Obstructive_Pulmonary_Disease_Value = mean(Chronic_Obstructive_Pulmonary_Disease_Value),
+            Poor_Physical_Health_Value = mean(Poor_Physical_Health_Value)) %>%
+  mutate(Coronary_Heart_Disease_Ranking = rank(Coronary_Heart_Disease_Value),
+         High_Blood_Pressure_Ranking = rank(High_Blood_Pressure_Value),
+         Diabetes_Ranking = rank(Diabetes_Value),
+         Smoking_Ranking = rank(Smoking_Value),
+         Obesity_Ranking = rank(Obesity_Value),
+         Poor_Mental_Health_Ranking = rank(Poor_Mental_Health_Value),
+         No_Leisure_Time_Physical_Activity_Ranking = rank(No_Leisure_Time_Physical_Activity_Value),
+         Chronic_Kidney_Disease_Ranking = rank(Chronic_Kidney_Disease_Value),
+         Stroke_Ranking = rank(Stroke_Value),
+         Chronic_Obstructive_Pulmonary_Disease_Ranking = rank(Chronic_Obstructive_Pulmonary_Disease_Value),
+         Poor_Physical_Health_Ranking = rank(Poor_Physical_Health_Value),
+         Total_Score = Coronary_Heart_Disease_Ranking +
+                       High_Blood_Pressure_Ranking +
+                       Diabetes_Ranking +
+                       Smoking_Ranking +
+                       Obesity_Ranking +
+                       Poor_Mental_Health_Ranking + 
+                       No_Leisure_Time_Physical_Activity_Ranking +
+                       Chronic_Kidney_Disease_Ranking +
+                       Stroke_Ranking +
+                       Chronic_Obstructive_Pulmonary_Disease_Ranking +
+                       Poor_Physical_Health_Ranking) %>%
+  select(Region, Num_States,
+         Coronary_Heart_Disease_Ranking, Coronary_Heart_Disease_Value,
+         High_Blood_Pressure_Ranking, High_Blood_Pressure_Value,
+         Diabetes_Ranking, Diabetes_Value,
+         Smoking_Ranking, Smoking_Value,
+         Obesity_Ranking, Obesity_Value,
+         Poor_Mental_Health_Ranking, Poor_Mental_Health_Value,
+         No_Leisure_Time_Physical_Activity_Ranking, No_Leisure_Time_Physical_Activity_Value,
+         Chronic_Kidney_Disease_Ranking, Chronic_Kidney_Disease_Value,
+         Stroke_Ranking, Stroke_Value,
+         Chronic_Obstructive_Pulmonary_Disease_Ranking, Chronic_Obstructive_Pulmonary_Disease_Value,
+         Poor_Physical_Health_Ranking, Poor_Physical_Health_Value,
+         Total_Score) %>%
+  arrange(Total_Score) %>%
+  rowid_to_column("Region_Heart_Health_Ranking")
+
+# State/Region Heart Health Ranking Visualization
+state_heart_ranking <- heart_ranking_by_state %>%
+  select(State_Name, Region, State_Heart_Health_Ranking)
+
+state_heart_ranking$State_Name <- tolower(state_heart_ranking$State_Name)
+
+colnames(state_heart_ranking)[colnames(state_heart_ranking) == "Region"] <-  "US_Region"
+colnames(state_heart_ranking)[colnames(state_heart_ranking) == "State_Name"] <-  "region"
+
+states <- map_data("state")
+
+state_heart_ranking$state_heart_ranking_group <- cut(state_heart_ranking$State_Heart_Health_Ranking, 
+                                                     breaks = c(0, 10, 20, 30, 40, 50),
+                                                     labels = c("1-10", "11-20", "21-30", "31-40", "41-50"))
+
+# State heart health ranking visualization
+state_heart_health_ranking_viz <- ggplot() + 
+                                    geom_map(data = states, map = states,
+                                             aes(x = long, y = lat, map_id = region)) +
+                                    geom_map(data = state_heart_ranking, map = states,
+                                             aes(fill = state_heart_ranking_group, map_id = region),
+                                             color = "black", size = 0.25) +
+                                    scale_fill_manual(name = "State Heart Health Ranking", 
+                                                      breaks = c( "1-10", 
+                                                                 "11-20", 
+                                                                 "21-30", 
+                                                                 "31-40",
+                                                                 "41-50"),
+                                                      values = colorspace::diverge_hsv(5)) +
+                                    coord_map("mercator") +
+                                    theme_map() +
+                                    theme(legend.position = "right")
+
+# Region heart health ranking visualization
+heart_ranking_by_region_copy <- heart_ranking_by_region
+
+colnames(heart_ranking_by_region_copy)[colnames(heart_ranking_by_region_copy) == "Region"] <- "US_Region"
+
+region_heart_ranking <- left_join(state_heart_ranking, heart_ranking_by_region_copy, by = "US_Region") %>%
+  select(region, US_Region, Region_Heart_Health_Ranking) %>%
+  mutate(Region_Heart_Health_Ranking = as.character(Region_Heart_Health_Ranking))
+
+region_heart_health_ranking_viz <- ggplot() + 
+                                    geom_map(data = states, map = states,
+                                             aes(x = long, y = lat, map_id = region)) +
+                                    geom_map(data = region_heart_ranking, map = states,
+                                             aes(fill = Region_Heart_Health_Ranking, map_id = region),
+                                             color = "black", size = 0.25) +
+                                    scale_fill_manual(name = "Region Heart Health Ranking", 
+                                                      breaks = c("1", 
+                                                                 "2", 
+                                                                 "3", 
+                                                                 "4",
+                                                                 "5"),
+                                                      values = colorspace::diverge_hsv(5)) +
+                                    coord_map("mercator") +
+                                    theme_map() +
+                                    theme(legend.position = "right")
+
+# Organizing the results
+heart_ranking_by_state_ranking <- heart_ranking_by_state %>%
+  select(State_Heart_Health_Ranking, 
+         State_Name, Region,
+         Num_Cities, 
+         Coronary_Heart_Disease_Ranking,
+         High_Blood_Pressure_Ranking,
+         Diabetes_Ranking,
+         Smoking_Ranking,
+         Obesity_Ranking,
+         Poor_Mental_Health_Ranking,
+         No_Leisure_Time_Physical_Activity_Ranking,
+         Chronic_Kidney_Disease_Ranking,
+         Stroke_Ranking,
+         Chronic_Obstructive_Pulmonary_Disease_Ranking,
+         Poor_Physical_Health_Ranking,
+         Total_Score)
+
+heart_ranking_by_region_ranking <- heart_ranking_by_region %>%
+  select(Region_Heart_Health_Ranking, 
+         Region, Num_States, 
+         Coronary_Heart_Disease_Ranking,
+         High_Blood_Pressure_Ranking,
+         Diabetes_Ranking,
+         Smoking_Ranking,
+         Obesity_Ranking,
+         Poor_Mental_Health_Ranking,
+         No_Leisure_Time_Physical_Activity_Ranking,
+         Chronic_Kidney_Disease_Ranking,
+         Stroke_Ranking,
+         Chronic_Obstructive_Pulmonary_Disease_Ranking,
+         Poor_Physical_Health_Ranking,
+         Total_Score)
+
+# Outputting the tables
+
+knitr::kable(heart_ranking_by_state_ranking, caption = "State Heart Health Ranking", format = "latex", booktabs = T) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "scale_down")) %>%
+  kableExtra::landscape()
+
+knitr::kable(heart_ranking_by_region_ranking, caption = "Region Heart Health Ranking", format = "latex", booktabs = T) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "scale_down")) %>%
+  kableExtra::landscape()
+
+```
+
+&nbsp;
+
+```{r State Heart Health Ranking Viz, echo = FALSE, message = FALSE, warning = FALSE}
+
+state_heart_health_ranking_viz
+
+```
+
+&nbsp;
+
+&nbsp;
+
+```{r Region Heart Health Ranking Viz, echo = FALSE, message = FALSE, warning = FALSE}
+
+region_heart_health_ranking_viz
+
+```
+
+&nbsp;
+
+__Analysis__
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At the state level, it appears that many West states in the United States rank well, and a lot of Southeast states in the United States rank poorly, in terms of heart health. This appearance is confirmed at the region level, with the West region ranking first and the Southeast region ranking last. In fact, the West region ranks first in every measure considered, and the Southeast region ranks last in every measure considered.
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;There are many _possible_ explanations for the geographical differences in heart health across the United States. Factors to consider are biology, behavior, and environment. In considering biology, it is _possible_ for individuals in certain states and regions to have genetic information that promotes good heart health and for individuals in certain states and regions to have genetic information that inhibits good heart health. In considering behavior, as illustrated above, Smoking and No Leisure Time Physical Activity strongly correlate with Coronary Heart Disease and other _Possible_ Coronary Heart Disease Indicators. There is plenty of research on the dangers of smoking and research to support the idea that leisurely and physical activities promote good heart health. Other behavior _could_, also, affect heart health. For example, maintaining strong social bonds and a healthy diet _could_ promote good heart health, as well. In considering environment, it is _possible_ that certain areas, in the United States, are conducive to good heart health. State healthcare policies and the number of parks and green spaces, in the area, _could_ play a significant role in promoting good heart health. Finally, there are _most likely_ multiple factors that contribute to the geographical differences in heart health across the United States. Biology, behavior, and environment, each, _could possibly_ play a role in the geographical differences. More data on each of these three factors, Coronary Heart Disease, and the _Possible_ Coronary Heart Disease Indicators would be needed to investigate these _possible_ explanations for the geographical differences.
+
+# Conclusion
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;This report explores correlations in the [500 Cities](https://www.cdc.gov/500cities/index.htm) dataset, focusing on heart health. The variables that strongly correlate with Coronary Heart Disease are High Blood Pressure, Diabetes, Smoking, Obesity, Poor Mental Health, No Leisure Time Physical Activity, Chronic Kidney Disease, Stroke, Chronic Obstructive Pulmonary Disease, and Poor Physical Health. The number and diversity of variables listed _suggest_ that good heart health can be viewed as general well-being. With these correlations, doctors can use these variables as _possible_ indicators of Coronary Heart Disease.
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;There seems to be many variables that strongly correlate with Coronary Heart Disease; many are listed above; however, there are _most likely_ many other variables that strongly correlate with Coronary Heart Disease, as well. With these correlations, this report examines which states and regions in the United States fair well and poorly on Coronary Heart Disease and the _Possible_ Coronary Heart Disease Indicators. The West region fairs well, and the Southeast region fairs poorly. _Possible_ explanations for these geographical differences include biology, behavior, and environment. More data on Coronary Heart Disease, the _Possible_ Coronary Heart Disease Indicators, and people's biology, behavior, and environment is needed to explore these relationships. However, it is worth noting the strong correlations  between Coronary Heart Disease and No Leisure Time Physical Activity and between Coronary Heart Disease and Smoking. No Leisure Time Physical Activity and Smoking, also, strongly correlate with some of the other _Possible_ Coronary Heart Disease Indicators. No Leisure Time Physical Activity and Smoking are the only two variables, of the _Possible_ Coronary Heart Disease Indicators, that are categorized as unhealthy behaviors. These behaviors can be changed; it is easy for people to add more leisurely and physical activities to their schedules, and it is definitely _possible_ for people to quit smoking or, at least, smoke less often. Lessening these two unhealthy behaviors _could possibly_ improve people's heart health and decrease the likelihood of people developing Coronary Heart Disease.
+
+# References
+
+* The [500 Cities](https://www.cdc.gov/500cities/index.htm) dataset
+
+* [ggthemes](https://cran.r-project.org/web/packages/ggthemes/ggthemes.pdf)
+
+* [R color cheatsheet](https://www.nceas.ucsb.edu/~frazier/RSpatialGuides/colorPaletteCheatsheet.pdf)
+
+* _R for Data Science: Import, Tidy, Transform, Visualize, and Model Data_ by   Hadley Wickham and Garrett Grolemund
+
+* [Stack Overflow](https://stackoverflow.com)
+
+```{r State/Region Heart Health Ranking Values, echo = FALSE}
+
+# Organizing th results
+
+heart_ranking_by_state_value <- heart_ranking_by_state %>%
+  select(State_Heart_Health_Ranking, 
+         State_Name, Region,
+         Num_Cities, 
+         Coronary_Heart_Disease_Value,
+         High_Blood_Pressure_Value,
+         Diabetes_Value,
+         Smoking_Value,
+         Obesity_Value,
+         Poor_Mental_Health_Value,
+         No_Leisure_Time_Physical_Activity_Value,
+         Chronic_Kidney_Disease_Value,
+         Stroke_Value,
+         Chronic_Obstructive_Pulmonary_Disease_Value,
+         Poor_Physical_Health_Value,
+         Total_Score)
+
+heart_ranking_by_region_value <- heart_ranking_by_region %>%
+  select(Region_Heart_Health_Ranking, 
+         Region, Num_States, 
+         Coronary_Heart_Disease_Value,
+         High_Blood_Pressure_Value,
+         Diabetes_Value,
+         Smoking_Value,
+         Obesity_Value,
+         Poor_Mental_Health_Value,
+         No_Leisure_Time_Physical_Activity_Value,
+         Chronic_Kidney_Disease_Value,
+         Stroke_Value,
+         Chronic_Obstructive_Pulmonary_Disease_Value,
+         Poor_Physical_Health_Value,
+         Total_Score)
+
+# Outputting the tables
+
+knitr::kable(heart_ranking_by_state_value, caption = "State Heart Health Ranking - Values", format = "latex", booktabs = T) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "scale_down")) %>%
+  kableExtra::landscape()
+
+knitr::kable(heart_ranking_by_region_value, caption = "Region Heart Health Ranking - Values", format = "latex", booktabs = T) %>%
+  kableExtra::kable_styling(latex_options = c("striped", "scale_down")) %>%
+  kableExtra::landscape()
+
+```
+
+
+
+
+
+
+
